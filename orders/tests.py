@@ -6,7 +6,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from orders.models import Order
-from orders.services import create_paid_order, parse_metadata_items, reduce_stock
+from orders.services import cents_to_decimal, create_paid_order, parse_metadata_items, reduce_stock
 from orders.views import _create_order_from_checkout_session
 from products.models import Brand, Category, Product, ProductVariant
 
@@ -276,6 +276,26 @@ class ParseMetadataItemsTests(TestCase):
 
     def test_empty_string_gives_empty_list(self):
         self.assertEqual(parse_metadata_items(""), [])
+
+
+class MoneyMathsTests(TestCase):
+    def test_cents_convert_to_exact_decimal(self):
+        # Compare tuples so float noise like 19.98999... cannot pass as equal.
+        self.assertEqual(cents_to_decimal(1999).as_tuple(), Decimal("19.99").as_tuple())
+
+    def test_missing_amount_is_zero(self):
+        self.assertEqual(cents_to_decimal(None), Decimal("0"))
+
+    def test_webhook_passes_exact_total(self):
+        variant = make_variant("M", stock_qty=5)
+        session = FakeStripeObject(
+            id="cs_money_1", payment_intent="pi_money_1", amount_total=1999,
+            customer_email="buyer@example.com", metadata={"items": f"{variant.id}:1"},
+        )
+        with patch("orders.views.create_paid_order") as mock_create:
+            _create_order_from_checkout_session(session)
+        total = mock_create.call_args.kwargs["total"]
+        self.assertEqual(total.as_tuple(), Decimal("19.99").as_tuple())
 
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PUBLISHABLE_KEY="pk_test_dummy")
