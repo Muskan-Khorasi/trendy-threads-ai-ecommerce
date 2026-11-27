@@ -168,72 +168,6 @@
   }
   .secure-badge svg { flex-shrink: 0; color: var(--success); }
   .payment-card { }
-  .payment-right-panel .form-group {
-    margin-bottom: 1.35rem;
-  }
-  .payment-right-panel .form-group label {
-    display: block;
-    font-weight: 500;
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
-    color: #374151;
-    line-height: 1.4;
-  }
-  .payment-right-panel .form-group input,
-  .payment-right-panel .form-group select {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 0.75rem 1rem;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    font-size: 1rem;
-    font-family: inherit;
-    color: #1a1a1a;
-    background: #fff;
-    line-height: 1.5;
-  }
-  .payment-right-panel .form-group input:focus,
-  .payment-right-panel .form-group select:focus {
-    outline: none;
-    border-color: #1a1a1a;
-    box-shadow: 0 0 0 2px rgba(26, 26, 26, 0.12);
-  }
-  .payment-right-panel .form-group select { cursor: pointer; }
-  .form-group { margin-bottom: 1.1rem; }
-  .form-group label { display: block; font-weight: 500; margin-bottom: 0.45rem; font-size: 0.9rem; color: var(--text); }
-  .form-group input, .form-group select { width: 100%; padding: 0.7rem 0.9rem; border: 1px solid var(--border); border-radius: var(--radius); font-size: 1rem; font-family: inherit; }
-  .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--accent); }
-  .form-group select { cursor: pointer; }
-  .payment-divider { display: flex; align-items: center; gap: 1rem; margin: 0 0 1.5rem 0; color: var(--text-muted); font-size: 0.8rem; }
-  .payment-divider::before, .payment-divider::after { content: ''; flex: 1; height: 1px; background: var(--border-light); }
-  #card-element-container {
-    padding: 0.75rem 0;
-    min-height: 52px;
-    position: relative;
-  }
-  #card-element-container.loading { pointer-events: none; }
-  #card-element-container.loading::before {
-    content: 'Loading…';
-    position: absolute;
-    left: 0;
-    top: 0.5rem;
-    font-size: 0.9rem;
-    color: #6b7280;
-  }
-  #card-element-container:not(.loading)::before { display: none; }
-  #card-element {
-    padding: 0.85rem 1rem;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    background: #fff;
-  }
-  #card-errors {
-    color: #b91c1c;
-    font-size: 0.875rem;
-    margin-top: 0.6rem;
-    min-height: 1.25em;
-    line-height: 1.4;
-  }
   .payment-right-panel .btn-pay { margin-top: 1.5rem; border-radius: 8px; }
   .checkout-card { min-height: 200px; }
   .payment-card.checkout-card { min-height: 420px; }
@@ -243,14 +177,6 @@
     border-radius: 12px;
     padding: 2rem 2.25rem;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-  }
-  .payment-right-panel .payment-divider { margin-top: 0; }
-  .pay-with-card-title {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #1a1a1a;
-    margin: 0 0 1.5rem 0;
-    letter-spacing: -0.02em;
   }
   .payment-form-section-title {
     color: #1a1a1a;
@@ -262,22 +188,12 @@
   .payment-form-section {
     margin-bottom: 1.75rem;
   }
-  .payment-form-subtitle {
-    color: #4b5563;
-    font-size: 0.9rem;
-    font-weight: 600;
-    margin: 0 0 0.75rem 0;
-    line-height: 1.4;
-  }
   .payment-right-panel .btn-pay {
     margin-top: 1.5rem;
     padding: 1rem 1.5rem;
     border-radius: 8px;
     font-size: 1rem;
     font-weight: 600;
-  }
-  .payment-right-panel .form-group input::placeholder {
-    color: #9ca3af;
   }
   .btn-pay {
     width: 100%;
@@ -300,15 +216,6 @@
   .btn-pay:hover:not(:disabled) { background: #333; }
   .btn-pay:active:not(:disabled) { transform: scale(0.99); }
   .btn-pay:disabled { opacity: 0.7; cursor: not-allowed; }
-  .btn-pay .spinner {
-    width: 1.25rem;
-    height: 1.25rem;
-    border: 2px solid rgba(255,255,255,0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: checkout-spin 0.7s linear infinite;
-  }
-  @keyframes checkout-spin { to { transform: rotate(360deg); } }
   .checkout-footer-actions { margin-top: 1.5rem; }
   .checkout-footer-actions .btn { display: inline-flex; align-items: center; gap: 0.5rem; }
 </style>
@@ -321,7 +228,7 @@
     Back to cart
   </a>
 
-  {% if not stripe_publishable_key %}
+  {% if not payments_enabled %}
   <div class="checkout-card" style="max-width: 480px;">
     <p style="color: var(--error); margin: 0;">Payment is temporarily unavailable. Please try again later or contact support.</p>
     <a href="{% url 'cart:cart_detail' %}" class="btn btn-outline mt-3" style="display: inline-flex; align-items: center; gap: 0.5rem;">
@@ -377,49 +284,12 @@
     </div>
 
     <div class="checkout-right payment-card checkout-card payment-right-panel">
-      {% if client_secret %}
-      <form id="payment-form" class="payment-form-ui">
+      <h3 class="payment-form-section-title">Payment</h3>
+      <p style="color: var(--text-muted); margin: 0;">You will enter your card and shipping details on Stripe's secure checkout page.</p>
+      <form method="post" action="{% url 'orders:create_checkout_session' %}">
         {% csrf_token %}
-        <div class="payment-form-section">
-          <h3 class="payment-form-section-title">Contact information</h3>
-          <div class="form-group">
-            <label for="email">Email</label>
-            <input type="email" id="email" name="email" placeholder="email@example.com" autocomplete="email" required>
-          </div>
-        </div>
-        <div class="payment-form-section">
-          <h3 class="payment-form-section-title">Payment method</h3>
-          <h4 class="payment-form-subtitle">Card information</h4>
-          <div id="card-element-container" class="loading">
-            <div id="card-element"></div>
-          </div>
-          <div id="card-errors" role="alert"></div>
-        </div>
-        <div class="form-group">
-          <label for="cardholder-name">Cardholder name</label>
-          <input type="text" id="cardholder-name" name="cardholder_name" placeholder="Full name on card" autocomplete="cc-name">
-        </div>
-        <div class="form-group">
-          <label for="country">Country or region</label>
-          <select id="country" name="country" autocomplete="country">
-            <option value="US">United States</option>
-            <option value="GB" selected>United Kingdom</option>
-            <option value="SE">Sweden</option>
-            <option value="CA">Canada</option>
-            <option value="AU">Australia</option>
-            <option value="DE">Germany</option>
-            <option value="FR">France</option>
-            <option value="IN">India</option>
-            <option value="OTHER">Other</option>
-          </select>
-        </div>
-        <button type="submit" id="submit-btn" class="btn-pay">
-          <span class="btn-text">Pay ${{ cart.get_total_price }}</span>
-        </button>
+        <button type="submit" class="btn-pay">Pay ${{ cart.get_total_price }}</button>
       </form>
-      {% else %}
-      <p style="color: var(--text-muted); margin: 0;">Unable to load payment. Please <a href="{% url 'orders:checkout' %}">refresh</a> or <a href="{% url 'cart:cart_detail' %}">return to cart</a>.</p>
-      {% endif %}
     </div>
   </div>
   <p class="checkout-footer-actions">
@@ -429,76 +299,6 @@
     </a>
   </p>
 
-  {% if client_secret %}
-  <script src="https://js.stripe.com/v3/"></script>
-  <script>
-  (function() {
-    var publishableKey = '{{ stripe_publishable_key|escapejs }}';
-    var clientSecret = '{{ client_secret|escapejs }}';
-    var paymentIntentId = '{{ payment_intent_id|escapejs }}';
-    var returnUrl = window.location.origin + '{% url "orders:checkout_success" %}?payment_intent=' + paymentIntentId;
-    var form = document.getElementById('payment-form');
-    var cardErrors = document.getElementById('card-errors');
-    var submitBtn = document.getElementById('submit-btn');
-    var btnText = submitBtn && submitBtn.querySelector('.btn-text');
-    var emailInput = document.getElementById('email');
-    var cardholderInput = document.getElementById('cardholder-name');
-    var countrySelect = document.getElementById('country');
-    var container = document.getElementById('card-element-container');
-    if (!publishableKey || !clientSecret) return;
-    var stripe = Stripe(publishableKey);
-    var elements = stripe.elements({ clientSecret: clientSecret, appearance: { theme: 'stripe', variables: { colorPrimary: '#1a1a1a', borderRadius: '6px' } } });
-    var cardElement = elements.create('card', { style: { base: { fontSize: '16px', color: '#1a1a1a' } } });
-    cardElement.on('ready', function() { if (container) container.classList.remove('loading'); });
-    cardElement.on('change', function(e) { cardErrors.textContent = e.error ? e.error.message : ''; });
-    cardElement.mount('#card-element');
-    form.addEventListener('submit', async function(e) {
-      e.preventDefault();
-      cardErrors.textContent = '';
-      var email = (emailInput && emailInput.value || '').trim();
-      if (!email) { cardErrors.textContent = 'Please enter your email.'; return; }
-      submitBtn.disabled = true;
-      if (btnText) btnText.innerHTML = '';
-      submitBtn.appendChild(document.createElement('span')).className = 'spinner';
-      try {
-        var csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
-        var updateResp = await fetch('{% url "orders:update_payment_intent" %}', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-          body: JSON.stringify({ payment_intent_id: paymentIntentId, email: email })
-        });
-        if (!updateResp.ok) { var errData = await updateResp.json().catch(function() { return {}; }); throw new Error(errData.error || 'Could not update details.'); }
-        var billingDetails = { email: email };
-        if (cardholderInput && cardholderInput.value.trim()) billingDetails.name = cardholderInput.value.trim();
-        if (countrySelect && countrySelect.value && countrySelect.value !== 'OTHER') {
-          billingDetails.address = { country: countrySelect.value };
-        }
-        var result = await stripe.confirmCardPayment(clientSecret, {
-          payment_method: {
-            card: cardElement,
-            billing_details: billingDetails
-          }
-        });
-        if (result.error) {
-          cardErrors.textContent = result.error.message || 'Payment failed.';
-          submitBtn.disabled = false;
-          var spinner = submitBtn.querySelector('.spinner');
-          if (spinner) spinner.remove();
-          if (btnText) btnText.textContent = 'Pay ${{ cart.get_total_price }}';
-        } else if (result.paymentIntent && result.paymentIntent.status === 'succeeded') {
-          window.location.href = returnUrl;
-        }
-      } catch (err) {
-        cardErrors.textContent = err.message || 'Something went wrong. Please try again.';
-        submitBtn.disabled = false;
-        var spinner = submitBtn.querySelector('.spinner');
-        if (spinner) spinner.remove();
-        if (btnText) btnText.textContent = 'Pay ${{ cart.get_total_price }}';
-      }
-    });
-  })();
-  </script>
-  {% endif %}
 {% endif %}
 </div>
 {% endblock %}
