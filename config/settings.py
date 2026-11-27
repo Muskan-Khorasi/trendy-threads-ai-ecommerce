@@ -121,6 +121,8 @@ DOMAIN = env('DOMAIN')
 STRIPE_PUBLISHABLE_KEY = env('STRIPE_PUBLISHABLE_KEY')
 STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY')
 STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET')
+# Countries Stripe Checkout will accept a shipping address from
+STRIPE_SHIPPING_COUNTRIES = ['US', 'GB', 'CA']
 
 # AWS Bedrock Knowledge Base (RAG)
 AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID')
