@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from orders.models import Order
-from orders.services import reduce_stock
+from orders.services import create_paid_order, parse_metadata_items, reduce_stock
 from orders.views import _create_order_from_checkout_session
 from products.models import Brand, Category, Product, ProductVariant
 
@@ -82,7 +82,7 @@ class StockReductionTests(TestCase):
                 return reduce_stock(variant, quantity, order)
             raise RuntimeError("boom")
 
-        with patch("orders.views.reduce_stock", side_effect=reduce_then_fail):
+        with patch("orders.services.reduce_stock", side_effect=reduce_then_fail):
             with self.assertRaises(RuntimeError):
                 _create_order_from_checkout_session(checkout_session("cs_test_3", items))
         self.assertEqual(len(calls), 2)
@@ -178,3 +178,61 @@ class ShippingAddressTests(TestCase):
             create.call_args.kwargs["shipping_address_collection"],
             {"allowed_countries": ["US", "GB", "CA"]},
         )
+
+
+class CreatePaidOrderTests(TestCase):
+    def setUp(self):
+        self.variant = make_variant("M", stock_qty=5)
+
+    def test_creates_order_with_items_and_reduces_stock(self):
+        order = create_paid_order(
+            [(str(self.variant.id), 2)], email="buyer@example.com", total=Decimal("20.00"),
+            stripe_session_id="cs_new_1",
+        )
+        self.assertEqual(order.status, "paid")
+        self.assertIsNotNone(order.paid_at)
+        self.assertEqual(order.items.get().quantity, 2)
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock_qty, 3)
+
+    def test_same_payment_returns_existing_order(self):
+        first = create_paid_order(
+            [(str(self.variant.id), 1)], email="", total=Decimal("10.00"), stripe_session_id="cs_new_2",
+        )
+        second = create_paid_order(
+            [(str(self.variant.id), 1)], email="", total=Decimal("10.00"), stripe_session_id="cs_new_2",
+        )
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Order.objects.count(), 1)
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock_qty, 4)
+
+    def test_skips_unknown_variants_and_zero_quantities(self):
+        order = create_paid_order(
+            [(str(self.variant.id), 0), ("999999", 1)], email="", total=Decimal("0.00"),
+            stripe_payment_intent_id="pi_new_3",
+        )
+        self.assertEqual(order.items.count(), 0)
+        self.assertEqual(order.email, "guest@example.com")
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock_qty, 5)
+
+    def test_saves_shipping_fields(self):
+        order = create_paid_order(
+            [(str(self.variant.id), 1)], email="", total=Decimal("10.00"), stripe_session_id="cs_new_4",
+            shipping={"first_name": "Jane", "city": "London", "country": "GB"},
+        )
+        self.assertEqual(order.first_name, "Jane")
+        self.assertEqual(order.city, "London")
+        self.assertEqual(order.country, "GB")
+
+
+class ParseMetadataItemsTests(TestCase):
+    def test_parses_pairs_and_skips_bad_entries(self):
+        self.assertEqual(
+            parse_metadata_items(" 12:2, 7:x ,nocolon, 9 : 1 "),
+            [("12", 2), ("9", 1)],
+        )
+
+    def test_empty_string_gives_empty_list(self):
+        self.assertEqual(parse_metadata_items(""), [])
