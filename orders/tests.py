@@ -101,3 +101,80 @@ class StockReductionTests(TestCase):
         self.assertEqual(Order.objects.count(), 1)
         self.variant.refresh_from_db()
         self.assertEqual(self.variant.stock_qty, 2)
+
+
+ADDRESS = {
+    "line1": "1 Test Street",
+    "line2": "Flat 2",
+    "city": "London",
+    "state": "",
+    "postal_code": "N1 1AA",
+    "country": "GB",
+}
+
+
+class ShippingAddressTests(TestCase):
+    def setUp(self):
+        self.variant = make_variant("S", stock_qty=5)
+
+    def assert_address_saved(self, order: Order) -> None:
+        self.assertEqual(order.first_name, "Jane")
+        self.assertEqual(order.last_name, "Doe Smith")
+        self.assertEqual(order.address_line1, "1 Test Street")
+        self.assertEqual(order.address_line2, "Flat 2")
+        self.assertEqual(order.city, "London")
+        self.assertEqual(order.postal_code, "N1 1AA")
+        self.assertEqual(order.country, "GB")
+
+    @override_settings(STRIPE_WEBHOOK_SECRET="whsec_test")
+    @patch("orders.views.stripe.Webhook.construct_event")
+    def test_webhook_saves_shipping_address(self, construct_event):
+        session = checkout_session("cs_ship_1", f"{self.variant.id}:1")
+        session["collected_information"] = {
+            "shipping_details": {"name": "Jane Doe Smith", "address": ADDRESS},
+        }
+        construct_event.return_value = {
+            "id": "evt_ship",
+            "type": "checkout.session.completed",
+            "data": {"object": session},
+        }
+        resp = self.client.post(reverse("orders:stripe_webhook"), data=b"{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        self.assert_address_saved(Order.objects.get(stripe_session_id="cs_ship_1"))
+
+    def test_webhook_reads_older_api_shipping_field(self):
+        session = checkout_session("cs_ship_2", f"{self.variant.id}:1")
+        session["shipping_details"] = {"name": "Jane Doe Smith", "address": ADDRESS}
+        _create_order_from_checkout_session(session)
+        self.assert_address_saved(Order.objects.get(stripe_session_id="cs_ship_2"))
+
+    def test_webhook_fills_address_on_order_from_success_page(self):
+        Order.objects.create(
+            stripe_session_id="cs_ship_3", email="buyer@example.com", first_name="", last_name="",
+            address_line1="", city="", state="", postal_code="", total=Decimal("10.00"), status="paid",
+        )
+        session = checkout_session("cs_ship_3", f"{self.variant.id}:1")
+        session["collected_information"] = {
+            "shipping_details": {"name": "Jane Doe Smith", "address": ADDRESS},
+        }
+        _create_order_from_checkout_session(session)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assert_address_saved(Order.objects.get(stripe_session_id="cs_ship_3"))
+
+    def test_session_without_address_leaves_fields_blank(self):
+        _create_order_from_checkout_session(checkout_session("cs_ship_4", f"{self.variant.id}:1"))
+        order = Order.objects.get(stripe_session_id="cs_ship_4")
+        self.assertEqual(order.address_line1, "")
+        self.assertEqual(order.first_name, "")
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_SHIPPING_COUNTRIES=["US", "GB", "CA"])
+    @patch("orders.views.stripe.checkout.Session.create")
+    def test_checkout_session_asks_for_shipping_address(self, create):
+        create.return_value = FakeStripeObject(url="https://checkout.stripe.test/pay")
+        self.client.post(reverse("cart:cart_add", args=[self.variant.id]), {"quantity": 1})
+        self.client.post(reverse("orders:create_checkout_session"))
+        create.assert_called_once()
+        self.assertEqual(
+            create.call_args.kwargs["shipping_address_collection"],
+            {"allowed_countries": ["US", "GB", "CA"]},
+        )

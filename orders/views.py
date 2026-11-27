@@ -10,10 +10,20 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from cart.cart import Cart
 from .models import Order, OrderItem
-from .services import lock_variants, reduce_stock
+from .services import lock_variants, reduce_stock, shipping_fields_from_session
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
+
+BLANK_SHIPPING = {
+    'first_name': '',
+    'last_name': '',
+    'address_line1': '',
+    'address_line2': '',
+    'city': '',
+    'state': '',
+    'postal_code': '',
+}
 
 
 def _metadata_items_from_cart(cart):
@@ -144,11 +154,16 @@ def _create_order_from_checkout_session(session):
     payment_intent_id = ''
     if session.get('payment_intent'):
         payment_intent_id = session['payment_intent'] if isinstance(session['payment_intent'], str) else session['payment_intent'].id
+    shipping = shipping_fields_from_session(session)
     if existing:
         existing.status = 'paid'
         existing.paid_at = timezone.now()
         if payment_intent_id:
             existing.stripe_payment_intent_id = payment_intent_id
+        # The success page may have created the order first without an address.
+        if shipping and not existing.address_line1:
+            for field, value in shipping.items():
+                setattr(existing, field, value)
         existing.save()
         return
     # Create new order from session metadata
@@ -178,16 +193,10 @@ def _create_order_from_checkout_session(session):
             stripe_payment_intent_id=payment_intent_id or '',
             user=None,
             email=email,
-            first_name='',
-            last_name='',
-            address_line1='',
-            address_line2='',
-            city='',
-            state='',
-            postal_code='',
             total=total,
             status='paid',
             paid_at=timezone.now(),
+            **{**BLANK_SHIPPING, **shipping},
         )
         for variant_id, qty in pairs:
             if qty <= 0 or variant_id not in variant_map:
@@ -274,6 +283,7 @@ def create_checkout_session(request):
             success_url=f'{domain.rstrip("/")}/orders/success/?session_id={{CHECKOUT_SESSION_ID}}',
             cancel_url=f'{domain.rstrip("/")}/orders/cancel/',
             metadata={'items': _metadata_items_from_cart(cart)},
+            shipping_address_collection={'allowed_countries': settings.STRIPE_SHIPPING_COUNTRIES},
         )
         return redirect(session.url)
     except stripe.error.StripeError:
