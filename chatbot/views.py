@@ -1,8 +1,7 @@
 import json
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from .services import query_chat
+from .services import RATE_LIMIT_REPLY, is_rate_limited, query_chat
 
 
 def _chat_json(reply, sources=None, status=200):
@@ -13,7 +12,6 @@ def _chat_json(reply, sources=None, status=200):
     return JsonResponse(payload, status=status)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def chat(request):
     """
@@ -28,6 +26,8 @@ def chat(request):
         ).strip()
         if not question:
             return _chat_json("Please enter a question.", sources=[], status=400)
+        if is_rate_limited(request):
+            return _chat_json(RATE_LIMIT_REPLY, sources=[], status=429)
         result = query_chat(question, request=request)
         return _chat_json(
             result["reply"],
