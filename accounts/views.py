@@ -3,6 +3,8 @@ from django.contrib.auth import login, authenticate
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
+from django.http import HttpRequest
+from django.urls import reverse
 from .forms import RegisterForm
 from django.db import models
 from django.views.decorators.http import require_POST
@@ -55,6 +57,16 @@ def register(request):
     return render(request, 'accounts/register.html', {'form': form})
 
 
+def _safe_login_redirect(request: HttpRequest) -> str:
+    # next comes from the client; values like /\evil.com look local but go off-site.
+    next_url = request.GET.get('next', '')
+    if url_has_allowed_host_and_scheme(
+        next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        return next_url
+    return reverse('products:home')
+
+
 def login_view(request):
     """Standalone login page – username/email and password."""
     from django.contrib.auth import get_user_model
@@ -72,15 +84,7 @@ def login_view(request):
         user = authenticate(request, username=email_or_username, password=password)
         if user is not None:
             login(request, user)
-            next_url = request.GET.get('next', 'products:home')
-            if next_url:
-                is_absolute = next_url.startswith(('http://', 'https://', '//'))
-                if is_absolute:
-                    if url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
-                        return redirect(next_url)
-                else:
-                    return redirect(next_url)
-            return redirect('products:home')
+            return redirect(_safe_login_redirect(request))
         messages.error(request, 'Invalid email or password.')
 
     return render(request, 'accounts/login.html')
