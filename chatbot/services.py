@@ -18,7 +18,6 @@ _ROBOTIC_PHRASES = (
     "don't have access", "do not have access", "i don't have access", "i do not have access",
     "i'm afraid i don't", "i don't have any information about your",
     "personal details about you", "personal information about you", "i don't store",
-    "i can't", "i cannot", "i'm unable", "i am unable",
 )
 
 # Varied, polite, professional replies when we don't have the info. Use "we" voice, sound genuine.
