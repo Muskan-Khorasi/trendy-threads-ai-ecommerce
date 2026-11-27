@@ -1,15 +1,28 @@
 from django.shortcuts import redirect, get_object_or_404, render
 from django.views.decorators.http import require_POST
 from django.contrib import messages
+from django.http import HttpRequest
+from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from products.models import ProductVariant
 from .cart import Cart
+
+
+def _safe_next_url(request: HttpRequest) -> str:
+    # next and Referer come from the client, so never redirect off-site.
+    url = request.POST.get('next') or request.META.get('HTTP_REFERER', '')
+    if url_has_allowed_host_and_scheme(
+        url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        return url
+    return reverse('products:product_list')
 
 
 @require_POST
 def cart_add(request, variant_id):
     cart = Cart(request)
     variant = get_object_or_404(ProductVariant, id=variant_id)
-    next_url = request.POST.get('next', request.META.get('HTTP_REFERER', '/'))
+    next_url = _safe_next_url(request)
 
     if variant.stock_qty <= 0:
         messages.warning(request, 'That item is out of stock and cannot be added.')
