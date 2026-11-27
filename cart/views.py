@@ -32,8 +32,14 @@ def cart_add(request, variant_id):
         quantity = max(1, int(request.POST.get('quantity', 1)))
     except (ValueError, TypeError):
         quantity = 1
-    if quantity > variant.stock_qty:
-        quantity = variant.stock_qty
+    # Count what is already in the cart, so repeat adds can't go over stock.
+    in_cart = cart.cart.get(str(variant.id), {}).get('quantity', 0)
+    room_left = variant.stock_qty - in_cart
+    if room_left <= 0:
+        messages.info(request, f'You already have all {variant.stock_qty} in stock in your cart.')
+        return redirect(next_url)
+    if quantity > room_left:
+        quantity = room_left
         messages.info(request, f'Only {variant.stock_qty} in stock; cart updated to that amount.')
     cart.add(variant.id, quantity=quantity)
     messages.success(request, 'Added to cart.')

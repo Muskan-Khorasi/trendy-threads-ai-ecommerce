@@ -2,6 +2,7 @@ import logging
 import stripe
 from decimal import Decimal
 from django.conf import settings
+from django.db import transaction
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect
 from django.utils import timezone
@@ -9,7 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from cart.cart import Cart
 from .models import Order, OrderItem
-from products.models import ProductVariant
+from .services import lock_variants, reduce_stock
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -48,38 +49,39 @@ def _create_order_from_payment_intent_metadata(intent):
     if not pairs:
         return
     variant_ids = [vid for vid, qty in pairs if qty > 0]
-    variants = ProductVariant.objects.filter(id__in=variant_ids).select_related('product')
-    variant_map = {str(v.id): v for v in variants}
-    order = Order.objects.create(
-        stripe_session_id='',
-        stripe_payment_intent_id=pid,
-        user=None,
-        email=email,
-        first_name='',
-        last_name='',
-        address_line1='',
-        address_line2='',
-        city='',
-        state='',
-        postal_code='',
-        total=total,
-        status='paid',
-        paid_at=timezone.now(),
-    )
-    for variant_id, qty in pairs:
-        if qty <= 0 or variant_id not in variant_map:
-            continue
-        variant = variant_map[variant_id]
-        OrderItem.objects.create(
-            order=order,
-            product_name=variant.product.name,
-            product_id=variant.product.id,
-            variant_id=variant.id,
-            size=variant.size,
-            color=variant.color,
-            quantity=qty,
-            price=variant.price,
+    with transaction.atomic():
+        variant_map = lock_variants(variant_ids)
+        order = Order.objects.create(
+            stripe_session_id='',
+            stripe_payment_intent_id=pid,
+            user=None,
+            email=email,
+            first_name='',
+            last_name='',
+            address_line1='',
+            address_line2='',
+            city='',
+            state='',
+            postal_code='',
+            total=total,
+            status='paid',
+            paid_at=timezone.now(),
         )
+        for variant_id, qty in pairs:
+            if qty <= 0 or variant_id not in variant_map:
+                continue
+            variant = variant_map[variant_id]
+            OrderItem.objects.create(
+                order=order,
+                product_name=variant.product.name,
+                product_id=variant.product.id,
+                variant_id=variant.id,
+                size=variant.size,
+                color=variant.color,
+                quantity=qty,
+                price=variant.price,
+            )
+            reduce_stock(variant, qty, order)
 
 
 def _create_order_from_cart(cart, email='', stripe_payment_intent_id='', stripe_session_id='', total=None, user=None):
@@ -93,41 +95,38 @@ def _create_order_from_cart(cart, email='', stripe_payment_intent_id='', stripe_
     if stripe_session_id and Order.objects.filter(stripe_session_id=stripe_session_id).exists():
         return
     order_total = total if total is not None else cart.get_total_price()
-    order = Order.objects.create(
-        stripe_session_id=stripe_session_id or '',
-        stripe_payment_intent_id=stripe_payment_intent_id or '',
-        user=user,
-        email=email or (user.email if user and user.email else 'guest@example.com'),
-        first_name='',
-        last_name='',
-        address_line1='',
-        address_line2='',
-        city='',
-        state='',
-        postal_code='',
-        total=order_total,
-        status='paid',
-        paid_at=timezone.now(),
-    )
-    
-    # Create order items from cart variants
-    variant_ids = list(cart.cart.keys())
-    variants = ProductVariant.objects.filter(id__in=variant_ids).select_related('product')
-    variant_map = {str(v.id): v for v in variants}
-    
-    for variant_id, item in cart.cart.items():
-        if variant_id in variant_map:
-            variant = variant_map[variant_id]
-            OrderItem.objects.create(
-                order=order,
-                product_name=variant.product.name,
-                product_id=variant.product.id,
-                variant_id=variant.id,
-                size=variant.size,
-                color=variant.color,
-                quantity=item['quantity'],
-                price=variant.price,
-            )
+    with transaction.atomic():
+        variant_map = lock_variants(cart.cart.keys())
+        order = Order.objects.create(
+            stripe_session_id=stripe_session_id or '',
+            stripe_payment_intent_id=stripe_payment_intent_id or '',
+            user=user,
+            email=email or (user.email if user and user.email else 'guest@example.com'),
+            first_name='',
+            last_name='',
+            address_line1='',
+            address_line2='',
+            city='',
+            state='',
+            postal_code='',
+            total=order_total,
+            status='paid',
+            paid_at=timezone.now(),
+        )
+        for variant_id, item in cart.cart.items():
+            if variant_id in variant_map:
+                variant = variant_map[variant_id]
+                OrderItem.objects.create(
+                    order=order,
+                    product_name=variant.product.name,
+                    product_id=variant.product.id,
+                    variant_id=variant.id,
+                    size=variant.size,
+                    color=variant.color,
+                    quantity=item['quantity'],
+                    price=variant.price,
+                )
+                reduce_stock(variant, item['quantity'], order)
     cart.clear()
 
 
@@ -172,38 +171,39 @@ def _create_order_from_checkout_session(session):
     if not pairs:
         return
     variant_ids = [vid for vid, qty in pairs if qty > 0]
-    variants = ProductVariant.objects.filter(id__in=variant_ids).select_related('product')
-    variant_map = {str(v.id): v for v in variants}
-    order = Order.objects.create(
-        stripe_session_id=session_id,
-        stripe_payment_intent_id=payment_intent_id or '',
-        user=None,
-        email=email,
-        first_name='',
-        last_name='',
-        address_line1='',
-        address_line2='',
-        city='',
-        state='',
-        postal_code='',
-        total=total,
-        status='paid',
-        paid_at=timezone.now(),
-    )
-    for variant_id, qty in pairs:
-        if qty <= 0 or variant_id not in variant_map:
-            continue
-        variant = variant_map[variant_id]
-        OrderItem.objects.create(
-            order=order,
-            product_name=variant.product.name,
-            product_id=variant.product.id,
-            variant_id=variant.id,
-            size=variant.size,
-            color=variant.color,
-            quantity=qty,
-            price=variant.price,
+    with transaction.atomic():
+        variant_map = lock_variants(variant_ids)
+        order = Order.objects.create(
+            stripe_session_id=session_id,
+            stripe_payment_intent_id=payment_intent_id or '',
+            user=None,
+            email=email,
+            first_name='',
+            last_name='',
+            address_line1='',
+            address_line2='',
+            city='',
+            state='',
+            postal_code='',
+            total=total,
+            status='paid',
+            paid_at=timezone.now(),
         )
+        for variant_id, qty in pairs:
+            if qty <= 0 or variant_id not in variant_map:
+                continue
+            variant = variant_map[variant_id]
+            OrderItem.objects.create(
+                order=order,
+                product_name=variant.product.name,
+                product_id=variant.product.id,
+                variant_id=variant.id,
+                size=variant.size,
+                color=variant.color,
+                quantity=qty,
+                price=variant.price,
+            )
+            reduce_stock(variant, qty, order)
 
 
 @require_http_methods(['GET'])
