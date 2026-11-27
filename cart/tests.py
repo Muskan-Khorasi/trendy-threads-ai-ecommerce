@@ -21,3 +21,41 @@ class CartTests(TestCase):
         )
         session_cart = self.client.session.get("cart", {})
         self.assertEqual(session_cart.get(str(self.variant.id), {}).get("quantity", 0), 1)
+
+
+class CartAddRedirectTests(TestCase):
+    def setUp(self):
+        brand = Brand.objects.create(name="Test", country="UK")
+        cat = Category.objects.create(name="Test", slug="test")
+        product = Product.objects.create(
+            name="Test Product", slug="test-prod", brand=brand, category=cat, description="Test"
+        )
+        self.variant = ProductVariant.objects.create(
+            product=product, size="M", color="Black", sku="REDIR-M-BLK", price=29.99, stock_qty=5
+        )
+        self.out_of_stock = ProductVariant.objects.create(
+            product=product, size="L", color="Black", sku="REDIR-L-BLK", price=29.99, stock_qty=0
+        )
+        self.add_url = reverse("cart:cart_add", args=[self.variant.id])
+        self.fallback = reverse("products:product_list")
+
+    def test_external_next_redirects_to_product_list(self):
+        resp = self.client.post(self.add_url, {"next": "https://evil.example.com"})
+        self.assertRedirects(resp, self.fallback, fetch_redirect_response=False)
+
+    def test_backslash_next_redirects_to_product_list(self):
+        resp = self.client.post(self.add_url, {"next": "/\evil.example.com"})
+        self.assertRedirects(resp, self.fallback, fetch_redirect_response=False)
+
+    def test_local_next_still_works(self):
+        resp = self.client.post(self.add_url, {"next": "/products/test-prod/"})
+        self.assertRedirects(resp, "/products/test-prod/", fetch_redirect_response=False)
+
+    def test_external_referer_redirects_to_product_list(self):
+        resp = self.client.post(self.add_url, HTTP_REFERER="https://evil.example.com/page")
+        self.assertRedirects(resp, self.fallback, fetch_redirect_response=False)
+
+    def test_out_of_stock_external_next_redirects_to_product_list(self):
+        url = reverse("cart:cart_add", args=[self.out_of_stock.id])
+        resp = self.client.post(url, {"next": "https://evil.example.com"})
+        self.assertRedirects(resp, self.fallback, fetch_redirect_response=False)
