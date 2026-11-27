@@ -2,7 +2,7 @@ import logging
 import stripe
 from decimal import Decimal
 from django.conf import settings
-from django.http import JsonResponse, HttpResponse
+from django.http import HttpResponse
 from django.shortcuts import render, redirect
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -18,20 +18,6 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 def _metadata_items_from_cart(cart):
     """Build metadata 'items' string: variant_id:qty,variant_id:qty for webhook order creation."""
     return ','.join(f"{vid}:{item['quantity']}" for vid, item in cart.cart.items())
-
-
-def _create_order_from_payment_intent_metadata(intent):
-    """Create the order from a succeeded PaymentIntent (webhook), e.g. if the customer closed the tab."""
-    metadata = intent.metadata or {}
-    items = parse_metadata_items(metadata.get('items') or '')
-    if not items:
-        return
-    create_paid_order(
-        items,
-        email=(metadata.get('email') or '').strip(),
-        total=Decimal(intent.amount / 100),
-        stripe_payment_intent_id=intent.id,
-    )
 
 
 def _create_order_from_cart(cart, email='', stripe_payment_intent_id='', stripe_session_id='', total=None, user=None):
@@ -90,40 +76,17 @@ def _create_order_from_checkout_session(session):
 
 @require_http_methods(['GET'])
 def checkout(request):
-    """
-    Checkout page: on-site credit card form. PaymentIntent created on load for secure card entry.
-    No redirect; no third-party branding shown to the user.
-    """
+    """Order summary page. The pay button posts to create_checkout_session (Stripe Checkout)."""
     cart = Cart(request)
     if not cart.cart:
         return redirect('cart:cart_detail')
-    pk = settings.STRIPE_PUBLISHABLE_KEY or ''
+    # Stripe rejects charges under 50 cents.
+    if int(cart.get_total_price() * 100) < 50:
+        return redirect('cart:cart_detail')
     context = {
         'cart': cart,
-        'stripe_publishable_key': pk,
-        'client_secret': None,
-        'payment_intent_id': None,
+        'payments_enabled': bool(settings.STRIPE_SECRET_KEY),
     }
-    if not settings.STRIPE_SECRET_KEY:
-        return render(request, 'orders/checkout.html', context)
-    total = cart.get_total_price()
-    amount_cents = int(total * 100)
-    if amount_cents < 50:
-        return redirect('cart:cart_detail')
-    try:
-        intent = stripe.PaymentIntent.create(
-            amount=amount_cents,
-            currency='usd',
-            payment_method_types=['card'],
-            metadata={
-                'email': '',
-                'items': _metadata_items_from_cart(cart),
-            },
-        )
-        context['client_secret'] = intent.client_secret
-        context['payment_intent_id'] = intent.id
-    except stripe.error.StripeError:
-        pass
     return render(request, 'orders/checkout.html', context)
 
 
@@ -163,57 +126,14 @@ def create_checkout_session(request):
         return redirect('orders:checkout')
 
 
-@require_POST
-def update_payment_intent(request):
-    """Update PaymentIntent metadata with email before confirm (for order record)."""
-    import json
-    if not settings.STRIPE_SECRET_KEY:
-        return JsonResponse({'error': 'Payment not configured'}, status=500)
-    try:
-        data = json.loads(request.body)
-        pid = (data.get('payment_intent_id') or '').strip()
-        email = (data.get('email') or '').strip()
-    except (ValueError, TypeError):
-        return JsonResponse({'error': 'Invalid request'}, status=400)
-    if not pid or not pid.startswith('pi_'):
-        return JsonResponse({'error': 'Invalid payment intent'}, status=400)
-    try:
-        intent = stripe.PaymentIntent.retrieve(pid)
-        metadata = dict(intent.metadata or {})
-        metadata['email'] = email[:254] if email else ''
-        stripe.PaymentIntent.modify(pid, metadata=metadata)
-        return JsonResponse({'ok': True})
-    except stripe.error.StripeError:
-        return JsonResponse({'error': 'Could not update payment details'}, status=400)
-
-
 def checkout_success(request):
     """
-    Success template view after payment. Stripe redirects here via return_url.
+    Success page after Stripe Checkout redirects back with ?session_id=.
     Order confirmation is saved to the database (idempotent: same payment never creates duplicate orders).
     """
-    payment_intent_id = request.GET.get('payment_intent')
     session_id = request.GET.get('session_id')
     cart = Cart(request)
     user = request.user if request.user.is_authenticated else None
-
-    if payment_intent_id and settings.STRIPE_SECRET_KEY:
-        try:
-            intent = stripe.PaymentIntent.retrieve(payment_intent_id)
-            if intent.status == 'succeeded':
-                email = (intent.metadata or {}).get('email') or ''
-                total = Decimal(intent.amount / 100)
-                _create_order_from_cart(
-                    cart,
-                    email=email,
-                    stripe_payment_intent_id=payment_intent_id,
-                    total=total,
-                    user=user,
-                )
-        except stripe.error.StripeError:
-            pass
-        order = Order.objects.filter(stripe_payment_intent_id=payment_intent_id).first()
-        return render(request, 'orders/success.html', {'order': order})
 
     if session_id and settings.STRIPE_SECRET_KEY:
         try:
@@ -266,8 +186,6 @@ def stripe_webhook(request):
         session = event['data']['object']
         _create_order_from_checkout_session(session)
         logger.info("Stripe webhook processed checkout.session.completed event_id=%s", event_id[:20] if event_id else "")
-    elif event_type == 'payment_intent.succeeded':
-        intent = event['data']['object']
-        _create_order_from_payment_intent_metadata(intent)
-        logger.info("Stripe webhook processed payment_intent.succeeded event_id=%s", event_id[:20] if event_id else "")
+    # Other events (e.g. payment_intent.succeeded, which Checkout also sends) are ignored:
+    # checkout.session.completed is the only event that creates orders.
     return HttpResponse(status=200)

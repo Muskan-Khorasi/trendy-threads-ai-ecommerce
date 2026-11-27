@@ -236,3 +236,54 @@ class ParseMetadataItemsTests(TestCase):
 
     def test_empty_string_gives_empty_list(self):
         self.assertEqual(parse_metadata_items(""), [])
+
+
+@override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PUBLISHABLE_KEY="pk_test_dummy")
+class CheckoutPaymentIntentRemovalTests(TestCase):
+    def setUp(self):
+        self.variant = make_variant("L", stock_qty=5)
+        self.client.post(reverse("cart:cart_add", args=[self.variant.id]), {"quantity": 1})
+
+    @patch("orders.views.stripe.PaymentIntent.create")
+    def test_checkout_page_does_not_create_payment_intent(self, create):
+        resp = self.client.get(reverse("orders:checkout"))
+        self.assertEqual(resp.status_code, 200)
+        create.assert_not_called()
+
+    def test_checkout_page_posts_to_stripe_checkout(self):
+        resp = self.client.get(reverse("orders:checkout"))
+        self.assertContains(resp, f'action="{reverse("orders:create_checkout_session")}"')
+        self.assertContains(resp, 'method="post"')
+        self.assertNotContains(resp, "js.stripe.com")
+
+    @override_settings(STRIPE_SECRET_KEY="")
+    def test_checkout_page_without_stripe_keys_shows_message(self):
+        resp = self.client.get(reverse("orders:checkout"))
+        self.assertContains(resp, "Payment is temporarily unavailable")
+        self.assertNotContains(resp, reverse("orders:create_checkout_session"))
+
+    def test_update_payment_intent_url_is_gone(self):
+        resp = self.client.post("/orders/update-payment-intent/", data=b"{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 404)
+
+    @override_settings(STRIPE_WEBHOOK_SECRET="whsec_test")
+    @patch("orders.views.stripe.Webhook.construct_event")
+    def test_payment_intent_succeeded_webhook_creates_no_order(self, construct_event):
+        intent = FakeStripeObject(
+            id="pi_only", amount=1000, metadata={"items": f"{self.variant.id}:1", "email": "a@example.com"}
+        )
+        construct_event.return_value = {
+            "id": "evt_pi",
+            "type": "payment_intent.succeeded",
+            "data": {"object": intent},
+        }
+        resp = self.client.post(reverse("orders:stripe_webhook"), data=b"{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(Order.objects.count(), 0)
+
+    @patch("orders.views.stripe.PaymentIntent.retrieve")
+    def test_success_page_ignores_payment_intent_param(self, retrieve):
+        resp = self.client.get(reverse("orders:checkout_success") + "?payment_intent=pi_123")
+        self.assertRedirects(resp, reverse("products:home"), fetch_redirect_response=False)
+        retrieve.assert_not_called()
+        self.assertEqual(Order.objects.count(), 0)
