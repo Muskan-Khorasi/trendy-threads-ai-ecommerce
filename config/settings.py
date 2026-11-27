@@ -20,6 +20,9 @@ env = environ.Env(
     BEDROCK_KNOWLEDGE_BASE_ID=(str, ''),
     BEDROCK_MODEL_ARN=(str, ''),
     S3_POLICY_BUCKET=(str, ''),
+    CHATBOT_RATE_LIMIT_MESSAGES=(int, 20),
+    CHATBOT_RATE_LIMIT_IP_MESSAGES=(int, 60),
+    CHATBOT_RATE_LIMIT_WINDOW_SECONDS=(int, 600),
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -134,6 +137,12 @@ BEDROCK_MODEL_ARN = env('BEDROCK_MODEL_ARN')
 # Optional: S3 bucket where you uploaded policy .txt files. Not used by the app;
 # the Knowledge Base is configured in AWS to use that bucket. Kept for reference.
 S3_POLICY_BUCKET = env('S3_POLICY_BUCKET')
+
+# Chatbot rate limits (each message costs a Bedrock call). The IP limit is higher
+# because several people can share one IP address.
+CHATBOT_RATE_LIMIT_MESSAGES = env('CHATBOT_RATE_LIMIT_MESSAGES')
+CHATBOT_RATE_LIMIT_IP_MESSAGES = env('CHATBOT_RATE_LIMIT_IP_MESSAGES')
+CHATBOT_RATE_LIMIT_WINDOW_SECONDS = env('CHATBOT_RATE_LIMIT_WINDOW_SECONDS')
 
 # Logging
 LOGGING = {

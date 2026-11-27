@@ -6,11 +6,49 @@ import logging
 import random
 import re
 from django.conf import settings
+from django.core.cache import cache
+from django.http import HttpRequest
 
 logger = logging.getLogger(__name__)
 
 MAX_QUERY_LENGTH = 1000
 BEDROCK_TIMEOUT_SECONDS = 30
+
+RATE_LIMIT_REPLY = (
+    "You've sent a lot of messages in a short time. "
+    "Please wait a few minutes and try again."
+)
+
+
+def _count_message(key: str, window_seconds: int) -> int:
+    # Fixed window: the first message sets the expiry, later ones only add to the count.
+    if cache.add(key, 1, timeout=window_seconds):
+        return 1
+    try:
+        return cache.incr(key)
+    except ValueError:
+        # The key expired between add() and incr(); start a new window.
+        cache.set(key, 1, timeout=window_seconds)
+        return 1
+
+
+def is_rate_limited(request: HttpRequest) -> bool:
+    """Count this message against the session and IP limits; True if either is over."""
+    window = settings.CHATBOT_RATE_LIMIT_WINDOW_SECONDS
+
+    if request.session.session_key is None:
+        request.session.save()
+    session_count = _count_message(f"chatbot:rl:session:{request.session.session_key}", window)
+
+    # REMOTE_ADDR is the proxy's address behind a load balancer. Check this when we
+    # deploy and read the client IP from the proxy's trusted header instead.
+    ip = request.META.get("REMOTE_ADDR", "unknown")
+    ip_count = _count_message(f"chatbot:rl:ip:{ip}", window)
+
+    return (
+        session_count > settings.CHATBOT_RATE_LIMIT_MESSAGES
+        or ip_count > settings.CHATBOT_RATE_LIMIT_IP_MESSAGES
+    )
 
 # Replies about data the bot can't see (accounts, orders, personal details) are swapped
 # for a pointer to the support team, which is more useful to the customer.
