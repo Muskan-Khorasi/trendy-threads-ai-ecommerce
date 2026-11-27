@@ -5,9 +5,10 @@ import os
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 env = environ.Env(
-    DEBUG=(bool, True),
+    DEBUG=(bool, False),
     SECRET_KEY=(str, 'django-insecure-change-me-in-production'),
     ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1']),
     DOMAIN=(str, 'http://localhost:8000'),
@@ -30,6 +31,17 @@ environ.Env.read_env(BASE_DIR / '.env')
 
 SECRET_KEY = env('SECRET_KEY')
 DEBUG = env('DEBUG')
+
+# Known placeholder keys (the default above and the one in .env.example).
+PLACEHOLDER_SECRET_KEYS = {
+    'django-insecure-change-me-in-production',
+    'your-django-secret-key-here',
+}
+if not DEBUG and (not SECRET_KEY.strip() or SECRET_KEY in PLACEHOLDER_SECRET_KEYS):
+    raise ImproperlyConfigured(
+        'SECRET_KEY is missing or still a placeholder while DEBUG is False. '
+        'Set a real SECRET_KEY in the environment, or set DEBUG=True for local work.'
+    )
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS')
 
 INSTALLED_APPS = [
@@ -94,6 +106,14 @@ AUTH_PASSWORD_VALIDATORS = [
 X_FRAME_OPTIONS = 'DENY'
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
+
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_SSL_REDIRECT = True
+    # Hosts like Render and Railway end TLS at a proxy; without this the
+    # HTTPS redirect loops forever.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
