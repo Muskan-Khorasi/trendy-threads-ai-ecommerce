@@ -9,7 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from cart.cart import Cart
 from .models import Order
-from .services import create_paid_order, parse_metadata_items, shipping_fields_from_session
+from .services import create_paid_order, parse_metadata_items, shipping_fields_from_session, user_from_session
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -47,6 +47,7 @@ def _create_order_from_checkout_session(session):
     if session.get('payment_intent'):
         payment_intent_id = session['payment_intent'] if isinstance(session['payment_intent'], str) else session['payment_intent'].id
     shipping = shipping_fields_from_session(session)
+    user = user_from_session(session)
     # Already have order? Just ensure it's marked paid (in case success page created it first)
     existing = Order.objects.filter(stripe_session_id=session_id).first()
     if existing:
@@ -54,6 +55,8 @@ def _create_order_from_checkout_session(session):
         existing.paid_at = timezone.now()
         if payment_intent_id:
             existing.stripe_payment_intent_id = payment_intent_id
+        if user and existing.user_id is None:
+            existing.user = user
         # The success page may have created the order first without an address.
         if shipping and not existing.address_line1:
             for field, value in shipping.items():
@@ -68,6 +71,7 @@ def _create_order_from_checkout_session(session):
         items,
         email=email,
         total=Decimal((session.get('amount_total') or 0) / 100),
+        user=user,
         stripe_session_id=session_id,
         stripe_payment_intent_id=payment_intent_id,
         shipping=shipping,
@@ -112,6 +116,12 @@ def create_checkout_session(request):
     line_items = cart.get_line_items_for_stripe(base_url)
     if not line_items:
         return redirect('cart:cart_detail')
+    # The webhook has no login session, so send the user id for it to read back.
+    user_params = {}
+    if request.user.is_authenticated:
+        user_params['client_reference_id'] = str(request.user.id)
+        if request.user.email:
+            user_params['customer_email'] = request.user.email
     try:
         session = stripe.checkout.Session.create(
             mode='payment',
@@ -120,6 +130,7 @@ def create_checkout_session(request):
             cancel_url=f'{domain.rstrip("/")}/orders/cancel/',
             metadata={'items': _metadata_items_from_cart(cart)},
             shipping_address_collection={'allowed_countries': settings.STRIPE_SHIPPING_COUNTRIES},
+            **user_params,
         )
         return redirect(session.url)
     except stripe.error.StripeError:

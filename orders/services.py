@@ -139,6 +139,15 @@ def _create_order_and_reduce_stock(
     return order
 
 
+def user_from_session(session: Any) -> User | None:
+    """The user whose id we sent as client_reference_id, or None for guests."""
+    reference = str(_read(session, "client_reference_id") or "").strip()
+    # Ignore anything that isn't a plain id rather than failing the webhook.
+    if not reference.isdigit():
+        return None
+    return User.objects.filter(pk=int(reference)).first()
+
+
 def _find_order_for_payment(session_id: str, payment_intent_id: str) -> Order | None:
     if session_id:
         order = Order.objects.filter(stripe_session_id=session_id).first()
