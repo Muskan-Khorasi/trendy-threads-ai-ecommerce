@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from products.models import ProductVariant
@@ -78,6 +78,37 @@ def create_paid_order(
         return existing
 
     items = [(str(variant_id), qty) for variant_id, qty in items if qty > 0]
+    try:
+        return _create_order_and_reduce_stock(
+            items,
+            email=email,
+            total=total,
+            user=user,
+            stripe_session_id=stripe_session_id,
+            stripe_payment_intent_id=stripe_payment_intent_id,
+            shipping=shipping,
+        )
+    except IntegrityError:
+        # Another request created this session's order between our check and insert.
+        # The atomic block rolled back, so stock was not reduced twice.
+        existing = None
+        if stripe_session_id:
+            existing = Order.objects.filter(stripe_session_id=stripe_session_id).first()
+        if existing is None:
+            raise
+        return existing
+
+
+def _create_order_and_reduce_stock(
+    items: list[tuple[str, int]],
+    *,
+    email: str,
+    total: Decimal,
+    user: User | None,
+    stripe_session_id: str,
+    stripe_payment_intent_id: str,
+    shipping: dict[str, str] | None,
+) -> Order:
     with transaction.atomic():
         variant_map = lock_variants(variant_id for variant_id, _ in items)
         order = Order.objects.create(

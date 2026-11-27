@@ -31,6 +31,14 @@ class Order(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            # The success page and the webhook can race; only one order per Checkout Session.
+            models.UniqueConstraint(
+                fields=['stripe_session_id'],
+                condition=~models.Q(stripe_session_id=''),
+                name='unique_order_stripe_session_id',
+            ),
+        ]
 
     def __str__(self):
         return f"Order #{self.id} - {self.email}"

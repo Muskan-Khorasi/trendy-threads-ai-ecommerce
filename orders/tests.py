@@ -227,6 +227,45 @@ class CreatePaidOrderTests(TestCase):
         self.assertEqual(order.country, "GB")
 
 
+class DuplicateOrderTests(TestCase):
+    def setUp(self):
+        self.variant = make_variant("M", stock_qty=5)
+
+    @override_settings(STRIPE_WEBHOOK_SECRET="whsec_test")
+    @patch("orders.views.stripe.Webhook.construct_event")
+    def test_webhook_twice_with_same_session_creates_one_order(self, construct_event):
+        construct_event.return_value = {
+            "id": "evt_dup",
+            "type": "checkout.session.completed",
+            "data": {"object": checkout_session("cs_dup_1", f"{self.variant.id}:2")},
+        }
+        url = reverse("orders:stripe_webhook")
+        self.client.post(url, data=b"{}", content_type="application/json")
+        self.client.post(url, data=b"{}", content_type="application/json")
+        self.assertEqual(Order.objects.filter(stripe_session_id="cs_dup_1").count(), 1)
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock_qty, 3)
+
+    def test_race_returns_existing_order_without_reducing_stock_again(self):
+        first = create_paid_order(
+            [(str(self.variant.id), 1)], email="", total=Decimal("10.00"), stripe_session_id="cs_race_1",
+        )
+        # Simulate the success page and webhook both passing the "already exists?" check.
+        with patch("orders.services._find_order_for_payment", return_value=None):
+            second = create_paid_order(
+                [(str(self.variant.id), 1)], email="", total=Decimal("10.00"), stripe_session_id="cs_race_1",
+            )
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Order.objects.filter(stripe_session_id="cs_race_1").count(), 1)
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock_qty, 4)
+
+    def test_blank_session_ids_are_allowed_more_than_once(self):
+        create_paid_order([], email="", total=Decimal("0.00"), stripe_payment_intent_id="pi_a")
+        create_paid_order([], email="", total=Decimal("0.00"), stripe_payment_intent_id="pi_b")
+        self.assertEqual(Order.objects.filter(stripe_session_id="").count(), 2)
+
+
 class ParseMetadataItemsTests(TestCase):
     def test_parses_pairs_and_skips_bad_entries(self):
         self.assertEqual(
