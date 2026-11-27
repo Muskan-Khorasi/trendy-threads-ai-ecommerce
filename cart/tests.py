@@ -22,6 +22,20 @@ class CartTests(TestCase):
         session_cart = self.client.session.get("cart", {})
         self.assertEqual(session_cart.get(str(self.variant.id), {}).get("quantity", 0), 1)
 
+    def test_adding_twice_is_capped_at_stock(self):
+        url = reverse("cart:cart_add", args=[self.variant.id])
+        self.client.post(url, {"quantity": 3})
+        self.client.post(url, {"quantity": 3})
+        session_cart = self.client.session.get("cart", {})
+        self.assertEqual(session_cart[str(self.variant.id)]["quantity"], 5)
+
+    def test_adding_when_cart_holds_all_stock_adds_nothing(self):
+        url = reverse("cart:cart_add", args=[self.variant.id])
+        self.client.post(url, {"quantity": 5})
+        self.client.post(url, {"quantity": 1})
+        session_cart = self.client.session.get("cart", {})
+        self.assertEqual(session_cart[str(self.variant.id)]["quantity"], 5)
+
 
 class CartAddRedirectTests(TestCase):
     def setUp(self):
