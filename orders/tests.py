@@ -1,6 +1,7 @@
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -326,3 +327,68 @@ class CheckoutPaymentIntentRemovalTests(TestCase):
         self.assertRedirects(resp, reverse("products:home"), fetch_redirect_response=False)
         retrieve.assert_not_called()
         self.assertEqual(Order.objects.count(), 0)
+
+
+class WebhookUserLinkTests(TestCase):
+    def setUp(self):
+        self.variant = make_variant("L", stock_qty=5)
+        self.user = User.objects.create_user("shopper", email="shopper@example.com", password="pass12345")
+
+    def start_checkout(self, create) -> dict:
+        create.return_value = FakeStripeObject(url="https://checkout.stripe.test/pay")
+        self.client.post(reverse("cart:cart_add", args=[self.variant.id]), {"quantity": 1})
+        self.client.post(reverse("orders:create_checkout_session"))
+        create.assert_called_once()
+        return create.call_args.kwargs
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy")
+    @patch("orders.views.stripe.checkout.Session.create")
+    def test_checkout_session_sends_logged_in_user(self, create):
+        self.client.force_login(self.user)
+        kwargs = self.start_checkout(create)
+        self.assertEqual(kwargs["client_reference_id"], str(self.user.id))
+        self.assertEqual(kwargs["customer_email"], "shopper@example.com")
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy")
+    @patch("orders.views.stripe.checkout.Session.create")
+    def test_checkout_session_for_guest_sends_no_user(self, create):
+        kwargs = self.start_checkout(create)
+        self.assertNotIn("client_reference_id", kwargs)
+        self.assertNotIn("customer_email", kwargs)
+
+    @override_settings(STRIPE_WEBHOOK_SECRET="whsec_test")
+    @patch("orders.views.stripe.Webhook.construct_event")
+    def test_webhook_links_order_to_user(self, construct_event):
+        session = checkout_session("cs_user_1", f"{self.variant.id}:1")
+        session["client_reference_id"] = str(self.user.id)
+        construct_event.return_value = {
+            "id": "evt_user",
+            "type": "checkout.session.completed",
+            "data": {"object": session},
+        }
+        resp = self.client.post(reverse("orders:stripe_webhook"), data=b"{}", content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(Order.objects.get(stripe_session_id="cs_user_1").user, self.user)
+
+    def test_guest_webhook_order_has_no_user(self):
+        _create_order_from_checkout_session(checkout_session("cs_user_2", f"{self.variant.id}:1"))
+        self.assertIsNone(Order.objects.get(stripe_session_id="cs_user_2").user)
+
+    def test_unknown_or_bad_reference_is_treated_as_guest(self):
+        for session_id, reference in [("cs_user_3", "999999"), ("cs_user_4", "not-a-number")]:
+            session = checkout_session(session_id, f"{self.variant.id}:1")
+            session["client_reference_id"] = reference
+            session["payment_intent"] = f"pi_{session_id}"
+            _create_order_from_checkout_session(session)
+            self.assertIsNone(Order.objects.get(stripe_session_id=session_id).user)
+
+    def test_webhook_adds_user_to_order_from_success_page(self):
+        Order.objects.create(
+            stripe_session_id="cs_user_5", email="shopper@example.com", first_name="", last_name="",
+            address_line1="", city="", state="", postal_code="", total=Decimal("10.00"), status="paid",
+        )
+        session = checkout_session("cs_user_5", f"{self.variant.id}:1")
+        session["client_reference_id"] = str(self.user.id)
+        _create_order_from_checkout_session(session)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(Order.objects.get(stripe_session_id="cs_user_5").user, self.user)
