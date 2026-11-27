@@ -2,28 +2,17 @@ import logging
 import stripe
 from decimal import Decimal
 from django.conf import settings
-from django.db import transaction
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from cart.cart import Cart
-from .models import Order, OrderItem
-from .services import lock_variants, reduce_stock, shipping_fields_from_session
+from .models import Order
+from .services import create_paid_order, parse_metadata_items, shipping_fields_from_session
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
-
-BLANK_SHIPPING = {
-    'first_name': '',
-    'last_name': '',
-    'address_line1': '',
-    'address_line2': '',
-    'city': '',
-    'state': '',
-    'postal_code': '',
-}
 
 
 def _metadata_items_from_cart(cart):
@@ -32,129 +21,48 @@ def _metadata_items_from_cart(cart):
 
 
 def _create_order_from_payment_intent_metadata(intent):
-    """
-    Persist order confirmation to the database from a succeeded PaymentIntent (e.g. webhook).
-    Idempotency: if an order already exists for this payment_intent id, we skip (no duplicate orders).
-    Used when the customer never hits the success page (e.g. closed tab after paying).
-    """
-    pid = intent.id
-    if Order.objects.filter(stripe_payment_intent_id=pid).exists():
-        return
+    """Create the order from a succeeded PaymentIntent (webhook), e.g. if the customer closed the tab."""
     metadata = intent.metadata or {}
-    email = (metadata.get('email') or '').strip() or 'guest@example.com'
-    total = Decimal(intent.amount / 100)
-    items_str = (metadata.get('items') or '').strip()
-    if not items_str:
+    items = parse_metadata_items(metadata.get('items') or '')
+    if not items:
         return
-    # Parse "variant_id:qty,variant_id:qty"
-    pairs = []
-    for part in items_str.split(','):
-        part = part.strip()
-        if ':' in part:
-            vid, qty = part.split(':', 1)
-            try:
-                pairs.append((vid.strip(), int(qty.strip()) or 0))
-            except (ValueError, TypeError):
-                continue
-    if not pairs:
-        return
-    variant_ids = [vid for vid, qty in pairs if qty > 0]
-    with transaction.atomic():
-        variant_map = lock_variants(variant_ids)
-        order = Order.objects.create(
-            stripe_session_id='',
-            stripe_payment_intent_id=pid,
-            user=None,
-            email=email,
-            first_name='',
-            last_name='',
-            address_line1='',
-            address_line2='',
-            city='',
-            state='',
-            postal_code='',
-            total=total,
-            status='paid',
-            paid_at=timezone.now(),
-        )
-        for variant_id, qty in pairs:
-            if qty <= 0 or variant_id not in variant_map:
-                continue
-            variant = variant_map[variant_id]
-            OrderItem.objects.create(
-                order=order,
-                product_name=variant.product.name,
-                product_id=variant.product.id,
-                variant_id=variant.id,
-                size=variant.size,
-                color=variant.color,
-                quantity=qty,
-                price=variant.price,
-            )
-            reduce_stock(variant, qty, order)
+    create_paid_order(
+        items,
+        email=(metadata.get('email') or '').strip(),
+        total=Decimal(intent.amount / 100),
+        stripe_payment_intent_id=intent.id,
+    )
 
 
 def _create_order_from_cart(cart, email='', stripe_payment_intent_id='', stripe_session_id='', total=None, user=None):
-    """
-    Persist order confirmation to the database: create Order and OrderItems from cart.
-    Idempotency: we never create a second order for the same payment. If an order already
-    exists for this stripe_payment_intent_id or stripe_session_id, we skip creation.
-    """
-    if stripe_payment_intent_id and Order.objects.filter(stripe_payment_intent_id=stripe_payment_intent_id).exists():
-        return
-    if stripe_session_id and Order.objects.filter(stripe_session_id=stripe_session_id).exists():
-        return
-    order_total = total if total is not None else cart.get_total_price()
-    with transaction.atomic():
-        variant_map = lock_variants(cart.cart.keys())
-        order = Order.objects.create(
-            stripe_session_id=stripe_session_id or '',
-            stripe_payment_intent_id=stripe_payment_intent_id or '',
-            user=user,
-            email=email or (user.email if user and user.email else 'guest@example.com'),
-            first_name='',
-            last_name='',
-            address_line1='',
-            address_line2='',
-            city='',
-            state='',
-            postal_code='',
-            total=order_total,
-            status='paid',
-            paid_at=timezone.now(),
-        )
-        for variant_id, item in cart.cart.items():
-            if variant_id in variant_map:
-                variant = variant_map[variant_id]
-                OrderItem.objects.create(
-                    order=order,
-                    product_name=variant.product.name,
-                    product_id=variant.product.id,
-                    variant_id=variant.id,
-                    size=variant.size,
-                    color=variant.color,
-                    quantity=item['quantity'],
-                    price=variant.price,
-                )
-                reduce_stock(variant, item['quantity'], order)
+    """Create the order from the session cart on the success page, then empty the cart."""
+    if not email and user and user.email:
+        email = user.email
+    create_paid_order(
+        [(variant_id, item['quantity']) for variant_id, item in cart.cart.items()],
+        email=email,
+        total=total if total is not None else cart.get_total_price(),
+        user=user,
+        stripe_session_id=stripe_session_id,
+        stripe_payment_intent_id=stripe_payment_intent_id,
+    )
     cart.clear()
 
 
 def _create_order_from_checkout_session(session):
     """
-    Create or update order from Stripe Checkout Session (webhook).
-    Used when customer pays via Stripe Checkout - works even if they close the tab before
-    reaching the success page. Idempotent: no duplicate orders for same session_id.
+    Create or update the order from a Stripe Checkout Session (webhook).
+    Works even if the customer closes the tab before reaching the success page.
     """
     session_id = session.get('id') or session.id
     if not session_id:
         return
-    # Already have order? Just ensure it's marked paid (in case success page created it first)
-    existing = Order.objects.filter(stripe_session_id=session_id).first()
     payment_intent_id = ''
     if session.get('payment_intent'):
         payment_intent_id = session['payment_intent'] if isinstance(session['payment_intent'], str) else session['payment_intent'].id
     shipping = shipping_fields_from_session(session)
+    # Already have order? Just ensure it's marked paid (in case success page created it first)
+    existing = Order.objects.filter(stripe_session_id=session_id).first()
     if existing:
         existing.status = 'paid'
         existing.paid_at = timezone.now()
@@ -166,53 +74,18 @@ def _create_order_from_checkout_session(session):
                 setattr(existing, field, value)
         existing.save()
         return
-    # Create new order from session metadata
-    metadata = session.get('metadata') or {}
-    items_str = (metadata.get('items') or '').strip()
-    if not items_str:
+    items = parse_metadata_items((session.get('metadata') or {}).get('items') or '')
+    if not items:
         return
-    email = (session.get('customer_email') or '') or ((session.get('customer_details') or {}).get('email') or '') or 'guest@example.com'
-    total = Decimal((session.get('amount_total') or 0) / 100)
-    # Parse "variant_id:qty,variant_id:qty"
-    pairs = []
-    for part in items_str.split(','):
-        part = str(part).strip()
-        if ':' in part:
-            vid, qty = part.split(':', 1)
-            try:
-                pairs.append((vid.strip(), int(qty.strip()) or 0))
-            except (ValueError, TypeError):
-                continue
-    if not pairs:
-        return
-    variant_ids = [vid for vid, qty in pairs if qty > 0]
-    with transaction.atomic():
-        variant_map = lock_variants(variant_ids)
-        order = Order.objects.create(
-            stripe_session_id=session_id,
-            stripe_payment_intent_id=payment_intent_id or '',
-            user=None,
-            email=email,
-            total=total,
-            status='paid',
-            paid_at=timezone.now(),
-            **{**BLANK_SHIPPING, **shipping},
-        )
-        for variant_id, qty in pairs:
-            if qty <= 0 or variant_id not in variant_map:
-                continue
-            variant = variant_map[variant_id]
-            OrderItem.objects.create(
-                order=order,
-                product_name=variant.product.name,
-                product_id=variant.product.id,
-                variant_id=variant.id,
-                size=variant.size,
-                color=variant.color,
-                quantity=qty,
-                price=variant.price,
-            )
-            reduce_stock(variant, qty, order)
+    email = session.get('customer_email') or (session.get('customer_details') or {}).get('email') or ''
+    create_paid_order(
+        items,
+        email=email,
+        total=Decimal((session.get('amount_total') or 0) / 100),
+        stripe_session_id=session_id,
+        stripe_payment_intent_id=payment_intent_id,
+        shipping=shipping,
+    )
 
 
 @require_http_methods(['GET'])
