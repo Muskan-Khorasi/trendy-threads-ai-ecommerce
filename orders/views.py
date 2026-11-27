@@ -1,6 +1,5 @@
 import logging
 import stripe
-from decimal import Decimal
 from django.conf import settings
 from django.http import HttpResponse
 from django.shortcuts import render, redirect
@@ -9,7 +8,13 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods, require_POST
 from cart.cart import Cart
 from .models import Order
-from .services import create_paid_order, parse_metadata_items, shipping_fields_from_session, user_from_session
+from .services import (
+    cents_to_decimal,
+    create_paid_order,
+    parse_metadata_items,
+    shipping_fields_from_session,
+    user_from_session,
+)
 
 logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -70,7 +75,7 @@ def _create_order_from_checkout_session(session):
     create_paid_order(
         items,
         email=email,
-        total=Decimal((session.get('amount_total') or 0) / 100),
+        total=cents_to_decimal(session.get('amount_total')),
         user=user,
         stripe_session_id=session_id,
         stripe_payment_intent_id=payment_intent_id,
@@ -151,7 +156,7 @@ def checkout_success(request):
             session = stripe.checkout.Session.retrieve(session_id)
             if session.payment_status == 'paid':
                 email = session.get('customer_email') or (session.get('customer_details') or {}).get('email', '') or ''
-                total = Decimal((session.amount_total or 0) / 100)
+                total = cents_to_decimal(session.amount_total)
                 _create_order_from_cart(
                     cart,
                     email=email,

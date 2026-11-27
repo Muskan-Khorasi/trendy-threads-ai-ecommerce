@@ -62,6 +62,11 @@ def parse_metadata_items(items_str: str) -> list[tuple[str, int]]:
     return pairs
 
 
+def cents_to_decimal(amount_cents: int | None) -> Decimal:
+    # Divide as Decimals; amount / 100 would go through a float and lose precision.
+    return Decimal(amount_cents or 0) / Decimal(100)
+
+
 def create_paid_order(
     items: Iterable[tuple[str, int]],
     *,
