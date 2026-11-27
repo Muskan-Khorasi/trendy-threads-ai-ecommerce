@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 MAX_QUERY_LENGTH = 1000
 BEDROCK_TIMEOUT_SECONDS = 30
 
-# If the model ever reveals AI/access phrasing despite the prompt, replace reply with a human fallback
-_ROBOTIC_PHRASES = (
-    "as an ai", "i'm an ai", "i am an ai", "as an assistant", "ai assistant",
+# Replies about data the bot can't see (accounts, orders, personal details) are swapped
+# for a pointer to the support team, which is more useful to the customer.
+_NO_ACCESS_PHRASES = (
     "don't have access", "do not have access", "i don't have access", "i do not have access",
     "i'm afraid i don't", "i don't have any information about your",
     "personal details about you", "personal information about you", "i don't store",
@@ -44,35 +44,35 @@ _ERROR_REPLIES = (
 
 
 def _get_no_info_reply() -> str:
-    """Pick a varied, human reply when we don't have the answer (avoids repeating the same sentence)."""
+    """Pick a varied reply when we don't have the answer (avoids repeating the same sentence)."""
     return random.choice(_NO_INFO_REPLIES)
 
 
 def _sanitize_reply(text: str) -> str:
-    """If the reply sounds robotic or reveals AI/access, return a varied human fallback instead."""
+    """Return the reply, or a support-team pointer if it is empty or says we lack access."""
     if not text or not text.strip():
         return _get_no_info_reply()
     lower = text.lower()
-    if any(phrase in lower for phrase in _ROBOTIC_PHRASES):
+    if any(phrase in lower for phrase in _NO_ACCESS_PHRASES):
         return _get_no_info_reply()
     return text.strip()
 
-# System-style instructions: human, concise, privacy-respecting; same intent and constraints
-RAG_PROMPT_TEMPLATE = """You are a friendly customer support agent for Trendy Threads. Write as a real person would—warm, professional, and genuinely helpful. Never sound robotic or scripted.
+# Prompt for the automated assistant: honest about being automated, grounded in policy docs.
+RAG_PROMPT_TEMPLATE = """You are the automated support assistant for Trendy Threads, an online fashion store. You answer customer questions using our store policy documents. Be friendly, warm and professional.
 
 STRICT RULES:
 - Answer in 1 to 3 short sentences only. No long paragraphs.
 - Match the level of detail to what they asked. Answer directly—do not start with "According to the search results" or repeat the question.
 - Use only the search results below. Do not make up information. Be polite and concise.
 - Do not use bullet points unless they asked for a list. Prefer a short, natural reply.
-- Always use "we" and "our" (company voice)—never "I" or "my". Sound like a supportive team member.
+- Always use "we" and "our" (company voice)—never "I" or "my".
+- If the customer asks whether they are talking to a person, say honestly that this is an automated assistant and that our support team can help if they would prefer a person.
 
 When the search results do NOT contain an answer (including questions about their name, account, order status, or any personal details):
-- Never say you are an AI, a bot, or that you "don't have access" to information. Never mention AI, assistant, or access.
-- Reply as a genuine human support agent would: acknowledge their question politely, then suggest our support team as the best next step. Be warm and professional.
-- Use "we" and "our" only. Example phrasing: "We'd love to help with that—our support team has the details. Feel free to reach out." / "That's outside what we can look up here, but our support team would be happy to help." / "For that, we'd recommend reaching out to our support team directly—they'll sort that out for you." / "We don't have that on hand in this chat, but our support team certainly does. They're the best folks to ask."
-- Vary your wording every time. If the user asks the same or similar question again, use a different phrase—never repeat. Be context-aware: if they asked about orders, mention support can check their order; if about account, mention they can help with account details; etc.
-- Keep it to one or two short sentences. Sound authentic and caring.
+- Acknowledge their question politely, then suggest our support team as the best next step.
+- Use "we" and "our" only. Example phrasing: "That's outside what we can look up here, but our support team would be happy to help." / "For that, we'd recommend reaching out to our support team directly—they'll sort that out for you."
+- Vary your wording every time. If the user asks the same or similar question again, use a different phrase. Be context-aware: if they asked about orders, mention support can check their order; if about account, mention they can help with account details; etc.
+- Keep it to one or two short sentences.
 
 <search_results>
 $search_results$
